@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical">
+
+    <SurfaceView
+        android:id="@+id/record_surfaceView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_alignParentBottom="true"
+        android:background="#80ffffff"
+        android:padding="10dp">
+
+        <!-- 开始/结束 录制按钮 -->
+        <ImageView
+            android:id="@+id/record_control"
+            android:layout_width="60dp"
+            android:layout_height="60dp"
+            android:layout_centerInParent="true"
+            android:onClick="startRecord"
+            android:src="@drawable/recordvideo_start" />
+
+        <ImageView
+            android:id="@+id/record_pause"
+            android:layout_width="50dp"
+            android:layout_height="50dp"
+            android:layout_centerVertical="true"
+            android:onClick="stopRecord"
+            android:src="@drawable/control_pause"
+            android:visibility="gone" />
+
+        <Chronometer
+            android:id="@+id/record_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_alignParentRight="true"
+            android:format="%s" />
+
+    </RelativeLayout>
+
+</RelativeLayout>
