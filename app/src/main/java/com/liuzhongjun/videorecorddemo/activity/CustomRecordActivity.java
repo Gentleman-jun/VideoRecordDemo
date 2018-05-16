@@ -9,7 +9,6 @@ import android.media.MediaRecorder;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
-import android.os.Message;
 import android.os.SystemClock;
 import android.support.annotation.Nullable;
 import android.support.v7.app.AppCompatActivity;
@@ -26,9 +25,10 @@ import com.liuzhongjun.videorecorddemo.util.VideoUtils;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 
 /**
  * Created by pc on 2017/3/20.
@@ -39,7 +39,9 @@ import java.util.Date;
 public class CustomRecordActivity extends AppCompatActivity implements View.OnClickListener {
 
     private static final String TAG = "CustomRecordActivity";
-    public static final int CONTROL_CODE = 1;
+
+    private Executor executor = Executors.newFixedThreadPool(1);
+
     //UI
     private ImageView mRecordControl;
     private ImageView mPauseRecord;
@@ -48,8 +50,17 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
     private Chronometer mRecordTime;
 
     //DATA
-    private boolean isRecording;// 标记，判断当前是否正在录制
-    private boolean isPause; //暂停标识
+
+    //录像机状态标识
+    private int mRecorderState;
+
+    public static final int STATE_INIT = 0;
+    public static final int STATE_RECORDING = 1;
+    public static final int STATE_PAUSE = 2;
+
+
+    //    private boolean isRecording;// 标记，判断当前是否正在录制
+//    private boolean isPause; //暂停标识
     private long mPauseTime = 0;           //录制暂停时间间隔
 
     // 存储文件
@@ -58,31 +69,6 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
     private MediaRecorder mediaRecorder;
     private String currentVideoFilePath;
     private String saveVideoPath = "";
-
-
-    private Handler mHandler = new MyHandler(this);
-
-    private static class MyHandler extends Handler {
-        private final WeakReference<CustomRecordActivity> mActivity;
-
-        public MyHandler(CustomRecordActivity activity) {
-            mActivity = new WeakReference<>(activity);
-        }
-
-        @Override
-        public void handleMessage(Message msg) {
-            System.out.println(msg);
-            if (mActivity.get() == null) {
-                return;
-            }
-            switch (msg.what) {
-                case CONTROL_CODE:
-                    //开启按钮
-                    mActivity.get().mRecordControl.setEnabled(true);
-                    break;
-            }
-        }
-    }
 
 
     private MediaRecorder.OnErrorListener OnErrorListener = new MediaRecorder.OnErrorListener() {
@@ -114,7 +100,7 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
         mPauseRecord.setOnClickListener(this);
         mPauseRecord.setEnabled(false);
 
-        //配置SurfaceHodler
+        //配置SurfaceHolder
         mSurfaceHolder = surfaceView.getHolder();
         // 设置Surface不需要维护自己的缓冲区
         mSurfaceHolder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
@@ -122,11 +108,12 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
         mSurfaceHolder.setFixedSize(320, 280);
         // 设置该组件不会让屏幕自动关闭
         mSurfaceHolder.setKeepScreenOn(true);
-        mSurfaceHolder.addCallback(mCallBack);//回调接口
+        //回调接口
+        mSurfaceHolder.addCallback(mSurfaceCallBack);
     }
 
 
-    private SurfaceHolder.Callback mCallBack = new SurfaceHolder.Callback() {
+    private SurfaceHolder.Callback mSurfaceCallBack = new SurfaceHolder.Callback() {
         @Override
         public void surfaceCreated(SurfaceHolder surfaceHolder) {
             initCamera();
@@ -141,7 +128,7 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
 
         @Override
         public void surfaceDestroyed(SurfaceHolder surfaceHolder) {
-            stopCamera();
+            releaseCamera();
         }
     };
 
@@ -151,25 +138,27 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
      *
      * @throws IOException
      * @author liuzhongjun
-     * @date 2016-3-16
      */
     private void initCamera() {
+
         if (mCamera != null) {
-            stopCamera();
+            releaseCamera();
         }
-        //默认启动后置摄像头
-        mCamera = Camera.open(Camera.CameraInfo.CAMERA_FACING_BACK);
+
+        mCamera = Camera.open();
         if (mCamera == null) {
             Toast.makeText(this, "未能获取到相机！", Toast.LENGTH_SHORT).show();
             return;
         }
         try {
+            //将相机与SurfaceHolder绑定
             mCamera.setPreviewDisplay(mSurfaceHolder);
             //配置CameraParams
-            setCameraParams();
+            configCameraParams();
             //启动相机预览
             mCamera.startPreview();
         } catch (IOException e) {
+            //有的手机会因为兼容问题报错，这就需要开发者针对特定机型去做适配了
             Log.d(TAG, "Error starting camera preview: " + e.getMessage());
         }
     }
@@ -181,26 +170,24 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
      * @author lip
      * @date 2015-3-16
      */
-    private void setCameraParams() {
-        if (mCamera != null) {
-            Camera.Parameters params = mCamera.getParameters();
-            //设置相机的横竖屏(竖屏需要旋转90°)
-            if (this.getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE) {
-                params.set("orientation", "portrait");
-                mCamera.setDisplayOrientation(90);
-            } else {
-                params.set("orientation", "landscape");
-                mCamera.setDisplayOrientation(0);
-            }
-            //设置聚焦模式
-            params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
-            //缩短Recording启动时间
-            params.setRecordingHint(true);
-            //影像稳定能力
-            if (params.isVideoStabilizationSupported())
-                params.setVideoStabilization(true);
-            mCamera.setParameters(params);
+    private void configCameraParams() {
+        Camera.Parameters params = mCamera.getParameters();
+        //设置相机的横竖屏(竖屏需要旋转90°)
+        if (this.getResources().getConfiguration().orientation != Configuration.ORIENTATION_LANDSCAPE) {
+            params.set("orientation", "portrait");
+            mCamera.setDisplayOrientation(90);
+        } else {
+            params.set("orientation", "landscape");
+            mCamera.setDisplayOrientation(0);
         }
+        //设置聚焦模式
+        params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+        //缩短Recording启动时间
+        params.setRecordingHint(true);
+        //影像稳定能力
+        if (params.isVideoStabilizationSupported())
+            params.setVideoStabilization(true);
+        mCamera.setParameters(params);
     }
 
 
@@ -210,7 +197,7 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
      * @author liuzhongjun
      * @date 2016-2-5
      */
-    private void stopCamera() {
+    private void releaseCamera() {
         if (mCamera != null) {
             mCamera.setPreviewCallback(null);
             mCamera.stopPreview();
@@ -222,47 +209,35 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
     /**
      * 开始录制视频
      */
-    public void startRecord() {
+    public boolean startRecord() {
+
         initCamera();
+        //录制视频前必须先解锁Camera
         mCamera.unlock();
-        setConfigRecord();
+        configMediaRecorder();
         try {
             //开始录制
             mediaRecorder.prepare();
             mediaRecorder.start();
         } catch (IOException e) {
-            e.printStackTrace();
+            return false;
         }
-        isRecording = true;
-        if (mPauseTime != 0) {
-            mRecordTime.setBase(SystemClock.elapsedRealtime() - (mPauseTime - mRecordTime.getBase()));
-        } else {
-            mRecordTime.setBase(SystemClock.elapsedRealtime());
-        }
-        mRecordTime.start();
+        return true;
     }
 
     /**
      * 停止录制视频
      */
     public void stopRecord() {
-        if (isRecording && mediaRecorder != null) {
-            // 设置后不会崩
-            mediaRecorder.setOnErrorListener(null);
-            mediaRecorder.setPreviewDisplay(null);
-            //停止录制
-            mediaRecorder.stop();
-            mediaRecorder.reset();
-            //释放资源
-            mediaRecorder.release();
-            mediaRecorder = null;
-
-            mRecordTime.stop();
-/*            //设置开始按钮可点击，停止按钮不可点击
-            mRecordControl.setEnabled(true);
-            mPauseRecord.setEnabled(false);*/
-            isRecording = false;
-        }
+        // 设置后不会崩
+        mediaRecorder.setOnErrorListener(null);
+        mediaRecorder.setPreviewDisplay(null);
+        //停止录制
+        mediaRecorder.stop();
+        mediaRecorder.reset();
+        //释放资源
+        mediaRecorder.release();
+        mediaRecorder = null;
     }
 
     public void pauseRecord() {
@@ -270,176 +245,200 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
 
     }
 
+    /**
+     * 合并录像视频方法
+     */
+    private void mergeRecordVideoFile() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String[] str = new String[]{saveVideoPath, currentVideoFilePath};
+                    //将2个视频文件合并到 append.mp4文件下
+                    VideoUtils.appendVideo(CustomRecordActivity.this, getSDPath(CustomRecordActivity.this) + "append.mp4", str);
+                    File reName = new File(saveVideoPath);
+                    File f = new File(getSDPath(CustomRecordActivity.this) + "append.mp4");
+                    //再将合成的append.mp4视频文件 移动到 saveVideoPath 路径下
+                    f.renameTo(reName);
+                    if (reName.exists()) {
+                        f.delete();
+                        new File(currentVideoFilePath).delete();
+                    }
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * 点击中间按钮，执行的UI更新操作
+     */
+    private void refreshControlUI() {
+        if (mRecorderState == STATE_INIT) {
+            //录像时间计时
+            mRecordTime.setBase(SystemClock.elapsedRealtime());
+            mRecordTime.start();
+
+            mRecordControl.setImageResource(R.drawable.recordvideo_stop);
+            //1s后才能按停止录制按钮
+            mRecordControl.setEnabled(false);
+            new Handler().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    mRecordControl.setEnabled(true);
+                }
+            }, 1000);
+            mPauseRecord.setVisibility(View.VISIBLE);
+            mPauseRecord.setEnabled(true);
+
+
+        } else if (mRecorderState == STATE_RECORDING) {
+            mPauseTime = 0;
+            mRecordTime.stop();
+
+            mRecordControl.setImageResource(R.drawable.recordvideo_start);
+            mPauseRecord.setVisibility(View.GONE);
+            mPauseRecord.setEnabled(false);
+        }
+
+    }
+
+    /**
+     * 点击暂停继续按钮，执行的UI更新操作
+     */
+    private void refreshPauseUI() {
+        if (mRecorderState == STATE_RECORDING) {
+            mPauseRecord.setImageResource(R.drawable.control_play);
+
+            mPauseTime = SystemClock.elapsedRealtime();
+            mRecordTime.stop();
+        } else if (mRecorderState == STATE_PAUSE) {
+            mPauseRecord.setImageResource(R.drawable.control_pause);
+
+            if (mPauseTime == 0) {
+                mRecordTime.setBase(SystemClock.elapsedRealtime());
+            } else {
+                mRecordTime.setBase(SystemClock.elapsedRealtime() - (mPauseTime - mRecordTime.getBase()));
+            }
+            mRecordTime.start();
+        }
+    }
 
     @Override
     public void onClick(View view) {
         switch (view.getId()) {
-            case R.id.record_control:
-                if (isPause) {
-                    //代表视频暂停录制，后点击中心（即继续录制视频）
+            case R.id.record_control: {
+                if (mRecorderState == STATE_INIT) {
+
+                    if (getSDPath(getApplicationContext()) == null)
+                        return;
+
+                    //视频文件保存路径，configMediaRecorder方法中会设置
+                    currentVideoFilePath = getSDPath(getApplicationContext()) + getVideoName();
+                    //开始录制视频
+                    if (!startRecord())
+                        return;
+
+                    refreshControlUI();
+
+                    mRecorderState = STATE_RECORDING;
+
+                } else if (mRecorderState == STATE_RECORDING) {
+                    //停止视频录制
+                    stopRecord();
+                    //先给Camera加锁后再释放相机
+                    mCamera.lock();
+                    releaseCamera();
+
+                    refreshControlUI();
+
+                    //判断是否进行视频合并
+                    if ("".equals(saveVideoPath)) {
+                        saveVideoPath = currentVideoFilePath;
+                    }else {
+                        mergeRecordVideoFile();
+                    }
+                    mRecorderState = STATE_INIT;
+
+                    //延迟一秒跳转到播放器，（确保视频合并完成后跳转） TODO 具体的逻辑可根据自己的使用场景跳转
+                    new Handler().postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            Intent intent = new Intent(CustomRecordActivity.this, PlayVideoActivity.class);
+                            Bundle bundle = new Bundle();
+                            bundle.putString("videoPath", saveVideoPath);
+                            intent.putExtras(bundle);
+                            startActivity(intent);
+                            finish();
+                        }
+                    },1000);
+                } else if (mRecorderState == STATE_PAUSE) {
+                    //代表视频暂停录制时，点击中心按钮
                     Intent intent = new Intent(CustomRecordActivity.this, PlayVideoActivity.class);
                     Bundle bundle = new Bundle();
                     bundle.putString("videoPath", saveVideoPath);
                     intent.putExtras(bundle);
                     startActivity(intent);
                     finish();
-                } else {
-                    if (!isRecording) {
-                        //开始录制视频
-                        startRecord();
-                        mRecordControl.setImageResource(R.drawable.recordvideo_stop);
-                        mRecordControl.setEnabled(false);//1s后才能停止
-                        mHandler.sendEmptyMessageDelayed(CONTROL_CODE, 1000);
-                        mPauseRecord.setVisibility(View.VISIBLE);
-                        mPauseRecord.setEnabled(true);
-                    } else {
-                        //停止视频录制
-                        mRecordControl.setImageResource(R.drawable.recordvideo_start);
-                        mPauseRecord.setVisibility(View.GONE);
-                        mPauseRecord.setEnabled(false);
-                        stopRecord();
-                        mCamera.lock();
-                        stopCamera();
-                        mRecordTime.stop();
-                        mPauseTime = 0;
-                        new Thread(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    if (!(saveVideoPath.equals(""))) {
-                                        String[] str = new String[]{saveVideoPath, currentVideoFilePath};
-                                        VideoUtils.appendVideo(CustomRecordActivity.this, getSDPath(CustomRecordActivity.this) + "append.mp4", str);
-                                        File reName = new File(saveVideoPath);
-                                        File f = new File(getSDPath(CustomRecordActivity.this) + "append.mp4");
-                                        f.renameTo(reName);//将合成的视频复制过来
-                                        if (reName.exists()) {
-                                            f.delete();
-                                            new File(currentVideoFilePath).delete();
-                                        }
-                                    }
-                                    Intent intent = new Intent(CustomRecordActivity.this, PlayVideoActivity.class);
-                                    Bundle bundle = new Bundle();
-                                    if (saveVideoPath.equals("")) {
-                                        bundle.putString("videoPath", currentVideoFilePath);
-                                    } else {
-                                        bundle.putString("videoPath", saveVideoPath);
-                                    }
-                                    intent.putExtras(bundle);
-                                    startActivity(intent);
-                                    finish();
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
-                            }
-                        }).start();
-                    }
                 }
                 break;
+            }
 
+            case R.id.record_pause: {
+                if (mRecorderState == STATE_RECORDING) {
+                    //正在录制的视频，点击后暂停
 
-            case R.id.record_pause:
-                if (isRecording) { //正在录制的视频，点击后暂停
-                    mPauseRecord.setImageResource(R.drawable.control_play);
-                    //暂停视频录制
+                    //取消自动对焦
                     mCamera.autoFocus(new Camera.AutoFocusCallback() {
                         @Override
                         public void onAutoFocus(boolean success, Camera camera) {
-                            if (success == true)
+                            if (success)
                                 CustomRecordActivity.this.mCamera.cancelAutoFocus();
                         }
                     });
-                    stopRecord();
-                    mRecordTime.stop();
-                    isPause = true;
 
-                    if (saveVideoPath.equals("")) {
+                    stopRecord();
+
+                    refreshPauseUI();
+
+
+                    //判断是否进行视频合并
+                    if ("".equals(saveVideoPath)) {
                         saveVideoPath = currentVideoFilePath;
                     } else {
-                        new Thread(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    String[] str = new String[]{saveVideoPath, currentVideoFilePath};
-                                    VideoUtils.appendVideo(CustomRecordActivity.this, getSDPath(getApplicationContext()) + "append.mp4", str);
-                                    File reName = new File(saveVideoPath);
-                                    File f = new File(getSDPath(getApplicationContext()) + "append.mp4");
-                                    f.renameTo(reName);
-                                    if (reName.exists()) {
-                                        f.delete();
-                                        new File(currentVideoFilePath).delete();
-                                    }
-                                } catch (IOException e) {
-                                    e.printStackTrace();
-                                }
-                            }
-                        }).start();
+                        mergeRecordVideoFile();
                     }
 
-                } else {
-                    mPauseRecord.setImageResource(R.drawable.control_pause);
-                    if (mPauseTime != 0) {
-                        mRecordTime.setBase(SystemClock.elapsedRealtime() - (mPauseTime - mRecordTime.getBase()));
-                    } else {
-                        mRecordTime.setBase(SystemClock.elapsedRealtime());
-                    }
-                    mRecordTime.start();
+                    mRecorderState = STATE_PAUSE;
+
+                } else if (mRecorderState == STATE_PAUSE) {
+
+                    if (getSDPath(getApplicationContext()) == null)
+                        return;
+
+                    //视频文件保存路径，configMediaRecorder方法中会设置
+                    currentVideoFilePath = getSDPath(getApplicationContext()) + getVideoName();
+
                     //继续视频录制
-                    startRecord();
-                    isPause = false;
+                    if (!startRecord()) {
+                        return;
+                    }
+                    refreshPauseUI();
+
+                    mRecorderState = STATE_RECORDING;
                 }
-                break;
-        }
-
-    }
-
-
-    /**
-     * 创建视频文件保存路径
-     */
-    private boolean createRecordDir() {
-        if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            Toast.makeText(this, "请查看您的SD卡是否存在！", Toast.LENGTH_SHORT).show();
-            return false;
-        }
-
-        File sampleDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Record");
-        if (!sampleDir.exists()) {
-            sampleDir.mkdirs();
-        }
-        String recordName = "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".mp4";
-        mVecordFile = new File(sampleDir, recordName);
-        currentVideoFilePath = mVecordFile.getAbsolutePath();
-        return true;
-    }
-
-
-    public static String getSDPath(Context context) {
-        File sdDir = null;
-        boolean sdCardExist = Environment.getExternalStorageState().equals(
-                Environment.MEDIA_MOUNTED); // 判断sd卡是否存在
-        if (sdCardExist) {
-            sdDir = Environment.getExternalStorageDirectory();
-        } else if (!sdCardExist) {
-
-            Toast.makeText(context, "SD卡不存在", Toast.LENGTH_SHORT).show();
-
-        }
-        File eis = new File(sdDir.toString() + "/Video/");
-        try {
-            if (!eis.exists()) {
-                eis.mkdir();
             }
-        } catch (Exception e) {
-
         }
-        return sdDir.toString() + "/Video/";
+
     }
 
 
     /**
      * 配置MediaRecorder()
      */
-    private void setConfigRecord() {
+
+    private void configMediaRecorder() {
         mediaRecorder = new MediaRecorder();
         mediaRecorder.reset();
         mediaRecorder.setCamera(mCamera);
@@ -478,21 +477,29 @@ public class CustomRecordActivity extends AppCompatActivity implements View.OnCl
         //设置录像的分辨率
         mediaRecorder.setVideoSize(352, 288);
 
-        //设置录像视频保存地址
-        currentVideoFilePath = getSDPath(getApplicationContext()) + getVideoName();
+        //设置录像视频输出地址
         mediaRecorder.setOutputFile(currentVideoFilePath);
+    }
+
+    /**
+     * 创建视频文件保存路径
+     */
+    public static String getSDPath(Context context) {
+        if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            Toast.makeText(context, "请查看您的SD卡是否存在！", Toast.LENGTH_SHORT).show();
+            return null;
+        }
+
+        File sdDir = Environment.getExternalStorageDirectory();
+        File eis = new File(sdDir.toString() + "/RecordVideo/");
+        if (!eis.exists()) {
+            eis.mkdir();
+        }
+        return sdDir.toString() + "/RecordVideo/";
     }
 
     private String getVideoName() {
         return "VID_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".mp4";
-    }
-
-
-    private void setToResult() {
-        Intent intent = new Intent();
-        intent.putExtra("videoPath", currentVideoFilePath);
-        setResult(RESULT_OK, intent);
-        finish();
     }
 
 

@@ -19,7 +19,7 @@ import java.util.Date;
 
 public class MainActivity extends AppCompatActivity {
     public static final int RECORD_SYSTEM_VIDEO = 1;
-    public static final int RECORD_CUSTOM_VIDEO = 2;
+//    public static final int RECORD_CUSTOM_VIDEO = 2;
     private VideoView mVideoView;
 
     @Override
@@ -53,7 +53,7 @@ public class MainActivity extends AppCompatActivity {
      */
     public void customVideo(View view) {
         Intent intent = new Intent(this, CustomRecordActivity.class);
-        startActivityForResult(intent, RECORD_CUSTOM_VIDEO);
+        startActivity(intent);
     }
 
 
@@ -89,11 +89,6 @@ public class MainActivity extends AppCompatActivity {
                 mVideoView.start();
                 break;
 
-            case RECORD_CUSTOM_VIDEO:
-                String filePath = data.getStringExtra("videoPath");
-                mVideoView.setVideoPath(filePath);
-                mVideoView.start();
-                break;
         }
     }
 }
